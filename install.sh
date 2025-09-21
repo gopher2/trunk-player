@@ -211,21 +211,19 @@ if [ ! -z "$MISSING_TOOLS" ]; then
             echo " pip installed"
         fi
 
-        if [[ $MISSING_TOOLS == *"gtimeout"* ]]; then
+        if [[ $MISSING_TOOLS == *"gtimeout"* ]] && [[ "$OSTYPE" == "darwin"* ]]; then
             echo "Installing gtimeout (coreutils)..."
-            if [[ "$OSTYPE" == "darwin"* ]]; then
-                if command -v brew >/dev/null 2>&1; then
-                    brew install coreutils
-                else
-                    echo "ERROR: Homebrew not found. Please install Homebrew first:"
-                    echo "   /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
-                    exit 1
-                fi
+            if command -v brew >/dev/null 2>&1; then
+                brew install coreutils
+            else
+                echo "ERROR: Homebrew not found. Please install Homebrew first:"
+                echo "   /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+                exit 1
             fi
             echo " gtimeout (coreutils) installed"
         fi
 
-        if [[ $MISSING_TOOLS == *"timeout"* ]]; then
+        if [[ $MISSING_TOOLS == *"timeout"* ]] && [[ "$OSTYPE" != "darwin"* ]]; then
             echo "Installing timeout (coreutils)..."
             if command -v apt >/dev/null 2>&1; then
                 sudo apt update && sudo apt install -y coreutils
@@ -1229,14 +1227,18 @@ fi
     # Copy and customize nginx config
     cp trunk_player/trunk_player.nginx.sample trunk_player/trunk_player.nginx
     
-    # Update paths in nginx config for current installation
+    # Update paths and port in nginx config for current installation
     INSTALL_DIR=$(pwd)
     if [[ "$OSTYPE" == "darwin"* ]]; then
         sed -i '' "s|/home/radio/trunk-player|$INSTALL_DIR|g" trunk_player/trunk_player.nginx
         sed -i '' "s|/var/log/trunk-player|$PROD_LOG_DIR|g" trunk_player/trunk_player.nginx
+        # Fix port configuration for Django development server
+        sed -i '' "s|server 127.0.0.1:7055;|server 127.0.0.1:8000;|g" trunk_player/trunk_player.nginx
     else
         sed -i "s|/home/radio/trunk-player|$INSTALL_DIR|g" trunk_player/trunk_player.nginx
         sed -i "s|/var/log/trunk-player|$PROD_LOG_DIR|g" trunk_player/trunk_player.nginx
+        # Fix port configuration for Django development server
+        sed -i "s|server 127.0.0.1:7055;|server 127.0.0.1:8000;|g" trunk_player/trunk_player.nginx
     fi
     
     # Install nginx config
@@ -1396,6 +1398,46 @@ fi
     fi
     
     echo "Production setup complete!"
+
+# Start Django development server
+echo ""
+echo "=== Starting Django Development Server ==="
+echo "Starting Django on http://0.0.0.0:8000 ..."
+
+# Check if Django is already running
+if lsof -i :8000 >/dev/null 2>&1; then
+    echo "Port 8000 is already in use. Stopping existing process..."
+    pkill -f "python.*manage.py.*runserver" 2>/dev/null || true
+    sleep 2
+fi
+
+# Start Django in background
+nohup python manage.py runserver 0.0.0.0:8000 > logs/django.log 2>&1 &
+DJANGO_PID=$!
+
+# Wait for Django to start
+echo "Waiting for Django to start..."
+for i in {1..10}; do
+    if curl -s http://localhost:8000/ >/dev/null 2>&1; then
+        echo " Django started successfully!"
+        echo " Process ID: $DJANGO_PID"
+        echo " Log file: logs/django.log"
+        break
+    fi
+    echo "   Attempt $i/10 - waiting 2 seconds..."
+    sleep 2
+done
+
+# Verify Django is running
+if curl -s http://localhost:8000/ >/dev/null 2>&1; then
+    echo " ✓ Django development server is running"
+    echo " ✓ Access the application at: http://localhost/ (via nginx)"
+    echo " ✓ Direct access to Django: http://localhost:8000/"
+else
+    echo " ✗ Django failed to start properly"
+    echo " Check logs/django.log for details"
+    echo " Manual start: python manage.py runserver 0.0.0.0:8000"
+fi
 
 echo ""
 echo "=== Installation Complete! ==="
