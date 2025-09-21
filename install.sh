@@ -1039,10 +1039,44 @@ if [ "$MIGRATION_SUCCESS" = false ]; then
     echo "You may need to run migrations manually later"
 fi
 
+echo "Configuring directories..."
+echo ""
+
+# Configure audio files directory
+DEFAULT_AUDIO_DIR="$PWD/audio_files"
+echo "Audio files will be stored in a directory that nginx serves directly."
+echo "Default location: $DEFAULT_AUDIO_DIR"
+echo ""
+read -p "Use default audio files location? (Y/n): " -n 1 -r
+echo
+
+if [[ $REPLY =~ ^[Nn]$ ]]; then
+    while true; do
+        read -p "Enter audio files directory path (absolute path): " AUDIO_DIR
+
+        # Convert to absolute path if relative
+        if [[ "$AUDIO_DIR" != /* ]]; then
+            AUDIO_DIR="$PWD/$AUDIO_DIR"
+        fi
+
+        echo "Audio files will be stored in: $AUDIO_DIR"
+        read -p "Is this correct? (y/N): " -n 1 -r
+        echo
+
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            break
+        fi
+    done
+else
+    AUDIO_DIR="$DEFAULT_AUDIO_DIR"
+fi
+
 echo "Creating directories..."
-mkdir -p audio_files
+mkdir -p "$AUDIO_DIR"
 mkdir -p logs
 mkdir -p static
+
+echo "Audio files directory: $AUDIO_DIR"
 
 echo "Collecting static files..."
 python manage.py collectstatic --noinput
@@ -1234,11 +1268,15 @@ fi
         sed -i '' "s|/var/log/trunk-player|$PROD_LOG_DIR|g" trunk_player/trunk_player.nginx
         # Fix port configuration for Django development server
         sed -i '' "s|server 127.0.0.1:7055;|server 127.0.0.1:8000;|g" trunk_player/trunk_player.nginx
+        # Update audio files directory path
+        sed -i '' "s|alias [^;]*audio_files;|alias $AUDIO_DIR;|g" trunk_player/trunk_player.nginx
     else
         sed -i "s|/home/radio/trunk-player|$INSTALL_DIR|g" trunk_player/trunk_player.nginx
         sed -i "s|/var/log/trunk-player|$PROD_LOG_DIR|g" trunk_player/trunk_player.nginx
         # Fix port configuration for Django development server
         sed -i "s|server 127.0.0.1:7055;|server 127.0.0.1:8000;|g" trunk_player/trunk_player.nginx
+        # Update audio files directory path
+        sed -i "s|alias [^;]*audio_files;|alias $AUDIO_DIR;|g" trunk_player/trunk_player.nginx
     fi
     
     # Install nginx config
@@ -1441,3 +1479,8 @@ fi
 
 echo ""
 echo "=== Installation Complete! ==="
+echo ""
+echo "Configuration Summary:"
+echo " • Audio files directory: $AUDIO_DIR"
+echo " • Application logs: $PWD/logs/"
+echo " • Static files: $PWD/static/"
