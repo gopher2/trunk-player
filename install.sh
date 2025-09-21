@@ -1210,6 +1210,13 @@ fi
                 fi
                 echo " Supervisor installed"
             fi
+
+            # Install coreutils on macOS for gtimeout
+            if [[ "$OSTYPE" == "darwin"* ]] && ! command -v gtimeout >/dev/null 2>&1; then
+                echo "Installing coreutils for gtimeout..."
+                brew install coreutils
+                echo " coreutils installed"
+            fi
     fi
     
     # Start services if not running
