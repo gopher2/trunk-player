@@ -62,6 +62,17 @@ for tool in openssl sed; do
     fi
 done
 
+# Check for timeout command (gtimeout on macOS, timeout on Linux)
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    if ! command -v gtimeout >/dev/null 2>&1; then
+        MISSING_TOOLS="$MISSING_TOOLS gtimeout"
+    fi
+else
+    if ! command -v timeout >/dev/null 2>&1; then
+        MISSING_TOOLS="$MISSING_TOOLS timeout"
+    fi
+fi
+
 # Special check for pip (might be pip3)
 if ! command -v pip >/dev/null 2>&1 && ! command -v pip3 >/dev/null 2>&1; then
     MISSING_TOOLS="$MISSING_TOOLS pip"
@@ -98,6 +109,20 @@ if [ ! -z "$MISSING_TOOLS" ]; then
         echo "  RedHat/CentOS:  sudo yum install sed"
         echo "  Fedora:         sudo dnf install sed"
         echo "  macOS:          brew install gnu-sed"
+        echo ""
+    fi
+
+    if [[ $MISSING_TOOLS == *"gtimeout"* ]]; then
+        echo "For gtimeout (macOS):"
+        echo "  macOS:          brew install coreutils"
+        echo ""
+    fi
+
+    if [[ $MISSING_TOOLS == *"timeout"* ]]; then
+        echo "For timeout (Linux):"
+        echo "  Ubuntu/Debian:  sudo apt update && sudo apt install coreutils"
+        echo "  RedHat/CentOS:  sudo yum install coreutils"
+        echo "  Fedora:         sudo dnf install coreutils"
         echo ""
     fi
     
@@ -185,6 +210,35 @@ if [ ! -z "$MISSING_TOOLS" ]; then
             fi
             echo " pip installed"
         fi
+
+        if [[ $MISSING_TOOLS == *"gtimeout"* ]]; then
+            echo "Installing gtimeout (coreutils)..."
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                if command -v brew >/dev/null 2>&1; then
+                    brew install coreutils
+                else
+                    echo "ERROR: Homebrew not found. Please install Homebrew first:"
+                    echo "   /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+                    exit 1
+                fi
+            fi
+            echo " gtimeout (coreutils) installed"
+        fi
+
+        if [[ $MISSING_TOOLS == *"timeout"* ]]; then
+            echo "Installing timeout (coreutils)..."
+            if command -v apt >/dev/null 2>&1; then
+                sudo apt update && sudo apt install -y coreutils
+            elif command -v dnf >/dev/null 2>&1; then
+                sudo dnf install -y coreutils
+            elif command -v yum >/dev/null 2>&1; then
+                sudo yum install -y coreutils
+            else
+                echo "ERROR: Could not determine package manager for timeout"
+                exit 1
+            fi
+            echo " timeout (coreutils) installed"
+        fi
         
         echo " All missing tools installed successfully!"
         echo "Note: You may need to restart your terminal or source your shell profile"
@@ -242,22 +296,270 @@ if [ ! -w . ]; then
 fi
 echo " Write permissions verified"
 
-# Check for optional PostgreSQL
+# Check for optional PostgreSQL with debug logging
 POSTGRES_AVAILABLE=false
+echo "Checking PostgreSQL availability..."
+
 if command -v psql >/dev/null 2>&1; then
-    # Test if PostgreSQL is actually running and accessible
-    if psql postgres -c '\q' >/dev/null 2>&1; then
-        POSTGRES_AVAILABLE=true
-        echo " PostgreSQL detected and accessible - database setup will be available"
+    echo " psql command found"
+
+    # Test if PostgreSQL is actually running and accessible with timeout
+    echo " Testing PostgreSQL connection..."
+
+    # Try connection with timeout and capture detailed error
+    # Use gtimeout on macOS if available, otherwise timeout, otherwise no timeout
+    TIMEOUT_CMD=""
+    if command -v gtimeout >/dev/null 2>&1; then
+        TIMEOUT_CMD="gtimeout 10s"
+    elif command -v timeout >/dev/null 2>&1; then
+        TIMEOUT_CMD="timeout 10s"
+    fi
+
+    if [ -n "$TIMEOUT_CMD" ]; then
+        if $TIMEOUT_CMD psql postgres -c '\q' >/dev/null 2>/tmp/psql_test_error.log; then
+            POSTGRES_AVAILABLE=true
+            echo " PostgreSQL detected and accessible - database setup will be available"
+        else
+            echo "WARNING: PostgreSQL installed but not running or accessible"
+            echo " Connection test failed after 10 seconds"
+
+            # Show detailed error if available
+            if [ -f /tmp/psql_test_error.log ]; then
+                echo " Error details:"
+                cat /tmp/psql_test_error.log | sed 's/^/   /'
+                rm -f /tmp/psql_test_error.log
+            fi
+
+            echo " Troubleshooting steps:"
+            echo "  macOS: brew services start postgresql"
+            echo "  macOS: Check with: brew services list | grep postgresql"
+            echo "  Linux: sudo systemctl start postgresql"
+            echo "  Linux: Check with: sudo systemctl status postgresql"
+            echo "  Check if PostgreSQL is running: ps aux | grep postgres"
+            echo "  Will use SQLite for development"
+        fi
+    else
+        echo " Warning: No timeout command available, testing connection without timeout..."
+        if psql postgres -c '\q' >/dev/null 2>/tmp/psql_test_error.log; then
+            POSTGRES_AVAILABLE=true
+            echo " PostgreSQL detected and accessible - database setup will be available"
+        else
+            echo "WARNING: PostgreSQL installed but not running or accessible"
+
+            # Show detailed error if available
+            if [ -f /tmp/psql_test_error.log ]; then
+                echo " Error details:"
+                cat /tmp/psql_test_error.log | sed 's/^/   /'
+                rm -f /tmp/psql_test_error.log
+            fi
+
+            echo " Troubleshooting steps:"
+            echo "  macOS: brew services start postgresql"
+            echo "  Linux: sudo systemctl start postgresql"
+            echo "  Will use SQLite for development"
+        fi
+    fi
+
+    if [ "$POSTGRES_AVAILABLE" = true ]; then
+
+        # Get PostgreSQL version for debugging
+        PG_VERSION=$(psql postgres -t -c 'SELECT version();' 2>/dev/null | head -1 | xargs)
+        echo " PostgreSQL version: $PG_VERSION"
+
+        # Check if we can create databases
+        echo " Testing database creation permissions..."
+        if psql postgres -c 'SELECT 1' >/dev/null 2>&1; then
+            echo " Database creation permissions verified"
+        else
+            echo "WARNING: Limited PostgreSQL permissions detected"
+        fi
     else
         echo "WARNING: PostgreSQL installed but not running or accessible"
+        echo " Connection test failed after 10 seconds"
+
+        # Show detailed error if available
+        if [ -f /tmp/psql_test_error.log ]; then
+            echo " Error details:"
+            cat /tmp/psql_test_error.log | sed 's/^/   /'
+            rm -f /tmp/psql_test_error.log
+        fi
+
+        echo " Troubleshooting steps:"
         echo "  macOS: brew services start postgresql"
+        echo "  macOS: Check with: brew services list | grep postgresql"
         echo "  Linux: sudo systemctl start postgresql"
+        echo "  Linux: Check with: sudo systemctl status postgresql"
+        echo "  Check if PostgreSQL is running: ps aux | grep postgres"
         echo "  Will use SQLite for development"
     fi
 else
     echo "WARNING: PostgreSQL not detected - will use SQLite for development"
-    echo "  Install with: brew install postgresql (macOS)"
+    echo ""
+    echo "PostgreSQL is recommended for production deployments."
+    echo "SQLite is suitable for development and testing."
+    echo ""
+    read -p "Would you like to install PostgreSQL now? (y/N): " -n 1 -r
+    echo
+
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo "Installing PostgreSQL..."
+
+        POSTGRES_INSTALL_SUCCESS=false
+
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            # macOS with Homebrew
+            if command -v brew >/dev/null 2>&1; then
+                echo " Installing PostgreSQL with Homebrew..."
+                if brew install postgresql; then
+                    echo " PostgreSQL installed successfully"
+
+                    # Start PostgreSQL service
+                    echo " Starting PostgreSQL service..."
+                    if brew services start postgresql; then
+                        echo " PostgreSQL service started"
+
+                        # Wait for PostgreSQL to be ready
+                        echo " Waiting for PostgreSQL to be ready..."
+                        for i in {1..10}; do
+                            if psql postgres -c '\q' >/dev/null 2>&1; then
+                                POSTGRES_INSTALL_SUCCESS=true
+                                echo " PostgreSQL is ready!"
+                                break
+                            fi
+                            echo "   Attempt $i/10 - waiting 2 seconds..."
+                            sleep 2
+                        done
+
+                        if [ "$POSTGRES_INSTALL_SUCCESS" = false ]; then
+                            echo "WARNING: PostgreSQL installed but not responding after 20 seconds"
+                            echo "  Try manually: brew services restart postgresql"
+                        fi
+                    else
+                        echo "ERROR: Failed to start PostgreSQL service"
+                        echo "  Try manually: brew services start postgresql"
+                    fi
+                else
+                    echo "ERROR: Failed to install PostgreSQL with Homebrew"
+                fi
+            else
+                echo "ERROR: Homebrew not found. Please install Homebrew first:"
+                echo "  /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+            fi
+        else
+            # Linux
+            echo " Detecting Linux distribution..."
+
+            if command -v apt >/dev/null 2>&1; then
+                # Ubuntu/Debian
+                echo " Installing PostgreSQL on Ubuntu/Debian..."
+                if sudo apt update && sudo apt install -y postgresql postgresql-contrib; then
+                    echo " PostgreSQL installed successfully"
+
+                    # Start PostgreSQL service
+                    echo " Starting PostgreSQL service..."
+                    if sudo systemctl start postgresql && sudo systemctl enable postgresql; then
+                        echo " PostgreSQL service started and enabled"
+
+                        # Wait for PostgreSQL to be ready
+                        echo " Waiting for PostgreSQL to be ready..."
+                        for i in {1..10}; do
+                            if sudo -u postgres psql -c '\q' >/dev/null 2>&1; then
+                                POSTGRES_INSTALL_SUCCESS=true
+                                echo " PostgreSQL is ready!"
+                                break
+                            fi
+                            echo "   Attempt $i/10 - waiting 2 seconds..."
+                            sleep 2
+                        done
+
+                        if [ "$POSTGRES_INSTALL_SUCCESS" = false ]; then
+                            echo "WARNING: PostgreSQL installed but not responding after 20 seconds"
+                            echo "  Try manually: sudo systemctl restart postgresql"
+                        fi
+                    else
+                        echo "ERROR: Failed to start PostgreSQL service"
+                        echo "  Try manually: sudo systemctl start postgresql"
+                    fi
+                else
+                    echo "ERROR: Failed to install PostgreSQL with apt"
+                fi
+            elif command -v dnf >/dev/null 2>&1; then
+                # Fedora
+                echo " Installing PostgreSQL on Fedora..."
+                if sudo dnf install -y postgresql postgresql-server postgresql-contrib; then
+                    echo " PostgreSQL installed successfully"
+
+                    # Initialize database
+                    echo " Initializing PostgreSQL database..."
+                    if sudo postgresql-setup --initdb; then
+                        echo " Database initialized"
+                    else
+                        echo "WARNING: Database initialization may have failed"
+                    fi
+
+                    # Start PostgreSQL service
+                    echo " Starting PostgreSQL service..."
+                    if sudo systemctl start postgresql && sudo systemctl enable postgresql; then
+                        echo " PostgreSQL service started and enabled"
+                        POSTGRES_INSTALL_SUCCESS=true
+                    else
+                        echo "ERROR: Failed to start PostgreSQL service"
+                    fi
+                else
+                    echo "ERROR: Failed to install PostgreSQL with dnf"
+                fi
+            elif command -v yum >/dev/null 2>&1; then
+                # RHEL/CentOS
+                echo " Installing PostgreSQL on RHEL/CentOS..."
+                if sudo yum install -y postgresql postgresql-server postgresql-contrib; then
+                    echo " PostgreSQL installed successfully"
+
+                    # Initialize database
+                    echo " Initializing PostgreSQL database..."
+                    if sudo postgresql-setup initdb; then
+                        echo " Database initialized"
+                    else
+                        echo "WARNING: Database initialization may have failed"
+                    fi
+
+                    # Start PostgreSQL service
+                    echo " Starting PostgreSQL service..."
+                    if sudo systemctl start postgresql && sudo systemctl enable postgresql; then
+                        echo " PostgreSQL service started and enabled"
+                        POSTGRES_INSTALL_SUCCESS=true
+                    else
+                        echo "ERROR: Failed to start PostgreSQL service"
+                    fi
+                else
+                    echo "ERROR: Failed to install PostgreSQL with yum"
+                fi
+            else
+                echo "ERROR: Could not determine package manager"
+                echo "  Supported: apt (Ubuntu/Debian), dnf (Fedora), yum (RHEL/CentOS)"
+            fi
+        fi
+
+        # Update POSTGRES_AVAILABLE flag if installation succeeded
+        if [ "$POSTGRES_INSTALL_SUCCESS" = true ]; then
+            POSTGRES_AVAILABLE=true
+            echo ""
+            echo "PostgreSQL installation completed successfully!"
+            echo " PostgreSQL is now available for database setup"
+        else
+            echo ""
+            echo "PostgreSQL installation failed or not fully ready"
+            echo " Will continue with SQLite for development"
+            echo " You can install PostgreSQL manually later and re-run this installer"
+        fi
+    else
+        echo "Skipping PostgreSQL installation - using SQLite for development"
+        echo ""
+        echo "Manual installation commands:"
+        echo "  macOS: brew install postgresql && brew services start postgresql"
+        echo "  Ubuntu/Debian: sudo apt install postgresql postgresql-contrib"
+        echo "  Fedora: sudo dnf install postgresql postgresql-server postgresql-contrib"
+        echo "  RHEL/CentOS: sudo yum install postgresql postgresql-server postgresql-contrib"
+    fi
 fi
 
 # Check if already installed
@@ -439,13 +741,17 @@ fi
 # Clean up sensitive variables
 unset djpass
 
-# Database setup
+# Database setup with comprehensive error handling
+echo "=== Database Configuration ==="
+
 if [ "$POSTGRES_AVAILABLE" = true ]; then
     echo "Setting up PostgreSQL database..."
-    
+    echo " Using PostgreSQL for production-ready database"
+
     # Generate secure database password
     dbpass=$(openssl rand -base64 24 | tr -d "=+/" | cut -c1-16)
-    
+    echo " Generated secure database password"
+
     echo "Configuring database connection..."
     # Create SQL setup script inline
     cat > /tmp/postgres_setup_temp.sql << EOF
@@ -573,10 +879,70 @@ EOF
     else
         # No existing setup, proceed normally
         echo "Creating new database setup..."
+        echo " This may take up to 30 seconds..."
+
+        DB_SETUP_SUCCESS=false
+
+        # Setup timeout command for different platforms
+        TIMEOUT_CMD=""
+        if command -v gtimeout >/dev/null 2>&1; then
+            TIMEOUT_CMD="gtimeout 30s"
+        elif command -v timeout >/dev/null 2>&1; then
+            TIMEOUT_CMD="timeout 30s"
+        fi
+
         if [[ "$OSTYPE" == "darwin"* ]]; then
-            psql postgres < /tmp/postgres_setup_temp.sql
+            echo " Running PostgreSQL setup as current user..."
+            if [ -n "$TIMEOUT_CMD" ]; then
+                if $TIMEOUT_CMD psql postgres < /tmp/postgres_setup_temp.sql >/tmp/db_setup.log 2>&1; then
+                    DB_SETUP_SUCCESS=true
+                    echo " Database setup completed successfully"
+                else
+                    echo "ERROR: Database setup failed or timed out"
+                    echo " Setup log:"
+                    cat /tmp/db_setup.log | sed 's/^/   /'
+                fi
+            else
+                echo " Warning: No timeout command available, running without timeout..."
+                if psql postgres < /tmp/postgres_setup_temp.sql >/tmp/db_setup.log 2>&1; then
+                    DB_SETUP_SUCCESS=true
+                    echo " Database setup completed successfully"
+                else
+                    echo "ERROR: Database setup failed"
+                    echo " Setup log:"
+                    cat /tmp/db_setup.log | sed 's/^/   /'
+                fi
+            fi
         else
-            sudo -u postgres psql < /tmp/postgres_setup_temp.sql
+            echo " Running PostgreSQL setup as postgres user..."
+            if [ -n "$TIMEOUT_CMD" ]; then
+                if $TIMEOUT_CMD sudo -u postgres psql < /tmp/postgres_setup_temp.sql >/tmp/db_setup.log 2>&1; then
+                    DB_SETUP_SUCCESS=true
+                    echo " Database setup completed successfully"
+                else
+                    echo "ERROR: Database setup failed or timed out"
+                    echo " Setup log:"
+                    cat /tmp/db_setup.log | sed 's/^/   /'
+                fi
+            else
+                echo " Warning: No timeout command available, running without timeout..."
+                if sudo -u postgres psql < /tmp/postgres_setup_temp.sql >/tmp/db_setup.log 2>&1; then
+                    DB_SETUP_SUCCESS=true
+                    echo " Database setup completed successfully"
+                else
+                    echo "ERROR: Database setup failed"
+                    echo " Setup log:"
+                    cat /tmp/db_setup.log | sed 's/^/   /'
+                fi
+            fi
+        fi
+
+        # Clean up log file
+        rm -f /tmp/db_setup.log
+
+        if [ "$DB_SETUP_SUCCESS" = false ]; then
+            echo "WARNING: PostgreSQL setup failed, falling back to SQLite"
+            POSTGRES_AVAILABLE=false
         fi
     fi
     
@@ -586,13 +952,94 @@ EOF
     unset dbpass
     
     echo "PostgreSQL database setup complete!"
+    echo " Database: trunk_player"
+    echo " User: trunk_player_user"
+    echo " Host: localhost"
 else
-    echo "PostgreSQL not available - using SQLite for development"
-    echo "For production, install PostgreSQL and re-run this installer"
+    echo "Using SQLite for development database..."
+    echo " Database file: db.sqlite3"
+    echo " Location: $(pwd)/db.sqlite3"
+
+    # Configure SQLite settings in local settings
+    echo "Configuring SQLite database settings..."
+
+    # Create SQLite database configuration
+    cat >> trunk_player/settings_local.py << 'EOF'
+
+# SQLite database setup (development)
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': os.path.join(BASE_DIR, 'db.sqlite3'),
+    }
+}
+EOF
+    echo " SQLite configuration added to settings_local.py"
+    echo " For production, install PostgreSQL and re-run this installer"
 fi
 
+echo ""
+echo "=== Django Database Initialization ==="
 echo "Running Django database migrations..."
-python manage.py migrate
+echo " This may take a few minutes for the initial setup..."
+
+# Run migrations with timeout and better error handling
+MIGRATION_SUCCESS=false
+
+# Setup timeout command for different platforms
+MIGRATION_TIMEOUT_CMD=""
+if command -v gtimeout >/dev/null 2>&1; then
+    MIGRATION_TIMEOUT_CMD="gtimeout 300s"
+elif command -v timeout >/dev/null 2>&1; then
+    MIGRATION_TIMEOUT_CMD="timeout 300s"
+fi
+
+if [ -n "$MIGRATION_TIMEOUT_CMD" ]; then
+    if $MIGRATION_TIMEOUT_CMD python manage.py migrate --verbosity=2 2>/tmp/migration.log; then
+        MIGRATION_SUCCESS=true
+        echo " Database migrations completed successfully"
+    else
+        echo "ERROR: Database migrations failed or timed out (5 minute limit)"
+        echo " Migration log:"
+        cat /tmp/migration.log | sed 's/^/   /'
+
+        echo ""
+        echo "Troubleshooting suggestions:"
+        echo " 1. Check database connectivity"
+        echo " 2. Verify database permissions"
+        echo " 3. Check disk space"
+        echo " 4. Review migration log above"
+        echo ""
+        echo "Manual migration: python manage.py migrate --verbosity=2"
+    fi
+else
+    echo " Warning: No timeout command available, running migrations without timeout..."
+    if python manage.py migrate --verbosity=2 2>/tmp/migration.log; then
+        MIGRATION_SUCCESS=true
+        echo " Database migrations completed successfully"
+    else
+        echo "ERROR: Database migrations failed"
+        echo " Migration log:"
+        cat /tmp/migration.log | sed 's/^/   /'
+
+        echo ""
+        echo "Troubleshooting suggestions:"
+        echo " 1. Check database connectivity"
+        echo " 2. Verify database permissions"
+        echo " 3. Check disk space"
+        echo " 4. Review migration log above"
+        echo ""
+        echo "Manual migration: python manage.py migrate --verbosity=2"
+    fi
+fi
+
+# Clean up log file
+rm -f /tmp/migration.log
+
+if [ "$MIGRATION_SUCCESS" = false ]; then
+    echo "WARNING: Continuing with installation, but database may not be properly initialized"
+    echo "You may need to run migrations manually later"
+fi
 
 echo "Creating directories..."
 mkdir -p audio_files
